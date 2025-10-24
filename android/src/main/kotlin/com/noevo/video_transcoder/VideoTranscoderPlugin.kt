@@ -1,16 +1,17 @@
 package com.noevo.video_transcoder
 
-import androidx.media3.common.MimeTypes
+import android.net.Uri
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Composition
-import android.net.Uri
-import java.io.File
+import androidx.media3.transformer.EditedMediaItem
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     private lateinit var channel: MethodChannel
@@ -26,23 +27,33 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         if (call.method == "transcodeToSafeH264") {
             val input = call.argument<String>("input")!!
             val output = call.argument<String>("output")!!
+
+            val inputItem = EditedMediaItem.Builder(
+                MediaItem.fromUri(Uri.fromFile(File(input)))
+            ).build()
+
+            val composition = Composition.Builder(inputItem).build()
+
             val transformer = Transformer.Builder(context)
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
                 .setAudioMimeType(MimeTypes.AUDIO_AAC)
-                .build()
-
-            transformer.start(
-                MediaItem.fromUri(Uri.fromFile(File(input))),
-                output,
-                object : Transformer.Listener {
+                .addListener(object : Transformer.Listener {
                     override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                         result.success(output)
                     }
-                    override fun onError(error: ExportException) {
-                        result.error("TRANSFORM_ERROR", error.message, null)
+
+                    override fun onError(
+                        composition: Composition,
+                        exportResult: ExportResult,
+                        exception: ExportException
+                    ) {
+                        result.error("TRANSFORM_ERROR", exception.message, null)
                     }
-                }
-            )
+                })
+                .build()
+
+            transformer.start(composition, output)
+
         } else {
             result.notImplemented()
         }
