@@ -3,8 +3,8 @@ package com.noevo.video_transcoder
 import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.effect.Presentation
-import androidx.media3.effect.ScaleToFit
+import androidx.media3.effect.ScaleToFitEffect
+import androidx.media3.effect.VideoEffects
 import androidx.media3.transformer.*
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
@@ -29,16 +29,16 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             try {
                 val mediaItem = MediaItem.fromUri(Uri.fromFile(File(input)))
 
-                // --- Build transformation request (formats only) ---
+                // --- Downscale effect: keep aspect ratio, fit to 720px height ---
+                val scaleEffect = ScaleToFitEffect(ScaleToFitEffect.ScalingLogic.FIT)
+                val videoEffects = VideoEffects(listOf(scaleEffect))
+
+                // --- Transformation setup ---
                 val transformationRequest = TransformationRequest.Builder()
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
                     .build()
 
-                // --- Presentation effect to scale down video to max 720p ---
-                val presentation = Presentation.createForHeight(720, ScaleToFit.FIT)
-
-                // --- Build transformer with listener ---
                 val transformer = Transformer.Builder(context)
                     .setTransformationRequest(transformationRequest)
                     .addListener(object : Transformer.Listener {
@@ -60,7 +60,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     .build()
 
                 val edited = EditedMediaItem.Builder(mediaItem)
-                    .setEffects(VideoGraphInput.of(presentation))
+                    .setEffects(videoEffects)
                     .build()
 
                 val sequence = EditedMediaItemSequence(listOf(edited))
@@ -71,7 +71,6 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             } catch (e: Exception) {
                 result.error("REFLECT_FAIL", e.message, null)
             }
-
         } else {
             result.notImplemented()
         }
