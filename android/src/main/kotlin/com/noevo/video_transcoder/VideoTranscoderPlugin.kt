@@ -36,14 +36,16 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
                 val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
-                // Build transformation request (simplified for 1.8.0)
+                // Build a simple H.264 + AAC transformation request
                 val request = TransformationRequest.Builder()
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
                     .build()
 
+                // ✅ In 1.8.0, the request is passed to the constructor, not set() later
                 val transformer = Transformer.Builder(context)
-                    .setTransformationRequest(request)
+                    .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .addListener(object : Transformer.Listener {
                         override fun onCompleted(
                             composition: Composition,
@@ -64,7 +66,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     })
                     .build()
 
-                // Build editable sequence
+                // Build media composition
                 val edited = EditedMediaItem.Builder(mediaItem).build()
                 val sequence = EditedMediaItemSequence(listOf(edited))
                 val composition = Composition.Builder(listOf(sequence)).build()
@@ -82,5 +84,6 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 }
+
 
 
