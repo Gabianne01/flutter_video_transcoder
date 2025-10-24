@@ -3,6 +3,7 @@ description: Lightweight video transcoder using system hardware encoders.
 version: 0.0.1
 environment:
   sdk: ">=3.0.0 <4.0.0"
+
 flutter:
   plugin:
     platforms:
@@ -11,6 +12,7 @@ flutter:
         pluginClass: VideoTranscoderPlugin
       ios:
         pluginClass: VideoTranscoderPlugin
+
 dependencies:
   flutter:
     sdk: flutter
