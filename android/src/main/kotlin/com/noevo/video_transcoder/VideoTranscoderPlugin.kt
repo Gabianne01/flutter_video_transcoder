@@ -25,7 +25,6 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val mediaItemCls = Class.forName("androidx.media3.common.MediaItem")
                 val mimeTypesCls = Class.forName("androidx.media3.common.MimeTypes")
                 val editedMediaItemCls = Class.forName("androidx.media3.transformer.EditedMediaItem")
-                val compositionCls = Class.forName("androidx.media3.transformer.Composition")
                 val transformerCls = Class.forName("androidx.media3.transformer.Transformer")
 
                 // Create MediaItem.fromUri(Uri)
@@ -33,43 +32,34 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val mediaItem = fromUri.invoke(null, Uri.fromFile(File(input)))
 
                 // Create EditedMediaItem.Builder(mediaItem).build()
-                val builderCtor = editedMediaItemCls.getDeclaredClasses()
-                    .firstOrNull { it.simpleName == "Builder" }?.getConstructor(mediaItemCls)
-                val editedBuilder = builderCtor?.newInstance(mediaItem)
-                val buildEdited = editedBuilder?.javaClass?.getMethod("build")
-                val edited = buildEdited?.invoke(editedBuilder)
-
-                // Create Composition.Builder(listOf(edited)).build()
-                val builderCtor2 = compositionCls.getDeclaredClasses()
-                    .firstOrNull { it.simpleName == "Builder" }?.getConstructor(List::class.java)
-                val compBuilder = builderCtor2?.newInstance(listOf(edited))
-                val buildComp = compBuilder?.javaClass?.getMethod("build")
-                val composition = buildComp?.invoke(compBuilder)
+                val builderCls = editedMediaItemCls.declaredClasses.first { it.simpleName == "Builder" }
+                val builder = builderCls.getConstructor(mediaItemCls).newInstance(mediaItem)
+                val build = builderCls.getMethod("build").invoke(builder)
 
                 // Build Transformer.Builder(context)
-                val builderCtor3 = transformerCls.getDeclaredClasses()
-                    .firstOrNull { it.simpleName == "Builder" }?.getConstructor(android.content.Context::class.java)
-                val transBuilder = builderCtor3?.newInstance(context)
+                val builderCtor3 = transformerCls.declaredClasses
+                    .first { it.simpleName == "Builder" }
+                    .getConstructor(android.content.Context::class.java)
+                val transBuilder = builderCtor3.newInstance(context)
 
-                val setVideo = transBuilder?.javaClass?.getMethod("setVideoMimeType", String::class.java)
-                val setAudio = transBuilder?.javaClass?.getMethod("setAudioMimeType", String::class.java)
+                val setVideo = transBuilder.javaClass.getMethod("setVideoMimeType", String::class.java)
+                val setAudio = transBuilder.javaClass.getMethod("setAudioMimeType", String::class.java)
 
                 val videoH264 = mimeTypesCls.getField("VIDEO_H264").get(null) as String
                 val audioAac = mimeTypesCls.getField("AUDIO_AAC").get(null) as String
 
-                setVideo?.invoke(transBuilder, videoH264)
-                setAudio?.invoke(transBuilder, audioAac)
+                setVideo.invoke(transBuilder, videoH264)
+                setAudio.invoke(transBuilder, audioAac)
 
-                val build = transBuilder?.javaClass?.getMethod("build")
-                val transformer = build?.invoke(transBuilder)
+                val buildTransformer = transBuilder.javaClass.getMethod("build")
+                val transformer = buildTransformer.invoke(transBuilder)
 
-                // Try to attach a listener if supported
+                // Attach listener (works for multiple Media3 versions)
                 try {
-                    val listenerIface = transformerCls.getDeclaredClasses()
-                        .firstOrNull { it.simpleName == "Listener" }
+                    val listenerIface = transformerCls.declaredClasses.first { it.simpleName == "Listener" }
                     val addListener = transformerCls.getMethod("addListener", listenerIface)
                     val proxy = java.lang.reflect.Proxy.newProxyInstance(
-                        listenerIface?.classLoader,
+                        listenerIface.classLoader,
                         arrayOf(listenerIface)
                     ) { _, method, args ->
                         when (method.name) {
@@ -82,20 +72,26 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                         null
                     }
                     addListener.invoke(transformer, proxy)
-                } catch (_: Exception) {
-                    // safe to ignore
-                }
+                } catch (_: Exception) { }
 
-                // Start the transformation
-                val start = transformerCls.methods.firstOrNull {
-                    it.name == "start" && it.parameterTypes.size == 2
-                }
-                start?.invoke(transformer, composition, output)
+                // Try calling start(EditedMediaItem, String)
+                try {
+                    val startEdited = transformerCls.getMethod("start", editedMediaItemCls, String::class.java)
+                    startEdited.invoke(transformer, build, output)
+                    return
+                } catch (_: Exception) { }
 
+                // Fallback: try start(MediaItem, String)
+                try {
+                    val startMedia = transformerCls.getMethod("start", mediaItemCls, String::class.java)
+                    startMedia.invoke(transformer, mediaItem, output)
+                    return
+                } catch (_: Exception) { }
+
+                result.error("NO_COMPATIBLE_START", "No compatible Transformer.start() found", null)
             } catch (e: Exception) {
                 result.error("REFLECT_FAIL", e.message, null)
             }
-
         } else {
             result.notImplemented()
         }
@@ -103,3 +99,4 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 }
+
