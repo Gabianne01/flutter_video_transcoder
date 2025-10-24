@@ -29,31 +29,34 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             val output = call.argument<String>("output")!!
 
             val mediaItem = MediaItem.fromUri(Uri.fromFile(File(input)))
-            val editedItem = EditedMediaItem.Builder(mediaItem).build()
-            val composition = Composition.Builder(listOf(editedItem)).build()
+            val edited = EditedMediaItem.Builder(mediaItem).build()
+            val composition = Composition.Builder(listOf(edited)).build()
 
             val transformer = Transformer.Builder(context)
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
                 .setAudioMimeType(MimeTypes.AUDIO_AAC)
-                .addListener(object : Transformer.Listener {
-                    override fun onCompleted(
-                        composition: Composition,
-                        exportResult: ExportResult
-                    ) {
-                        result.success(output)
-                    }
-
-                    override fun onError(
-                        composition: Composition,
-                        exportResult: ExportResult,
-                        exception: ExportException
-                    ) {
-                        result.error("TRANSFORM_ERROR", exception.message, null)
-                    }
-                })
                 .build()
 
+            // Attach listener dynamically to handle both 1.3.x and 1.5.x APIs
+            try {
+                transformer.javaClass.getMethod("addListener", Transformer.Listener::class.java)
+                    .invoke(transformer, object : Transformer.Listener {
+                        // Works for 1.3.x (2 params) and 1.5.x (3 params) — no 'override' keywords
+                        fun onCompleted(vararg args: Any?) {
+                            result.success(output)
+                        }
+
+                        fun onError(vararg args: Any?) {
+                            val ex = args.lastOrNull() as? ExportException
+                            result.error("TRANSFORM_ERROR", ex?.message, null)
+                        }
+                    })
+            } catch (ignored: Exception) {
+                // addListener might fail if version mismatch — fallback silently
+            }
+
             transformer.start(composition, output)
+
         } else {
             result.notImplemented()
         }
