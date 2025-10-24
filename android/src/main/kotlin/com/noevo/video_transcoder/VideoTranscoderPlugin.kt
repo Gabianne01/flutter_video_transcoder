@@ -4,6 +4,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.transformer.Composition
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
@@ -37,26 +38,29 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
                 Log.i("VideoTranscoder", "🎬 Starting transcode: $input → $output")
 
-                // Media3: build source MediaItem
                 val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
-                // Request configuration: hardware-accelerated, 720p H.264 + AAC
+                // --- Configure your target resolution & bitrate ---
                 val transformRequest = TransformationRequest.Builder()
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
-                    .setResolution(1280, 720)          // downscale to 720p if higher
-                    .setVideoBitrate(2_000_000)        // ~2 Mbps target
+                    // ↓ Target around 720p, hardware encoders will adapt aspect ratio
+                    .setVideoWidth(1280)
+                    .setVideoHeight(720)
+                    // ↓ Bitrate in bits per second (e.g., 3 Mbps)
+                    .setVideoBitrate(3_000_000)
                     .build()
 
                 val transformer = Transformer.Builder(context)
                     .setTransformationRequest(transformRequest)
                     .addListener(object : Transformer.Listener {
-                        override fun onCompleted(exportResult: ExportResult) {
+                        override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                             Log.i("VideoTranscoder", "✅ Transcode done: $output")
                             result.success(output)
                         }
 
                         override fun onError(
+                            composition: Composition,
                             exportResult: ExportResult,
                             exception: ExportException
                         ) {
@@ -69,8 +73,8 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 transformer.start(mediaItem, output)
 
             } catch (e: Exception) {
-                Log.e("VideoTranscoder", "❌ Reflect/Setup failed: ${e.message}", e)
-                result.error("REFLECT_FAIL", e.message, null)
+                Log.e("VideoTranscoder", "❌ Setup failed: ${e.message}", e)
+                result.error("SETUP_FAIL", e.message, null)
             }
 
         } else {
@@ -80,4 +84,5 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 }
+
 
