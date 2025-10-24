@@ -2,9 +2,12 @@ package com.noevo.video_transcoder
 
 import android.net.Uri
 import android.util.Log
-import androidx.media3.common.MimeTypes
 import androidx.media3.common.MediaItem
-import androidx.media3.transformer.*
+import androidx.media3.common.MimeTypes
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.Transformer
+import androidx.media3.transformer.TransformationRequest
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -25,46 +28,48 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             val input = call.argument<String>("input")!!
             val output = call.argument<String>("output")!!
 
-            Log.i("VideoTranscoder", "🎬 Transcoding: $input → $output")
-
             try {
-                // Build a MediaItem
-                val mediaItem = MediaItem.fromUri(Uri.fromFile(File(input)))
-                val editedItem = EditedMediaItem.Builder(mediaItem).build()
+                val inputFile = File(input)
+                if (!inputFile.exists()) {
+                    result.error("NO_INPUT", "Input file not found: $input", null)
+                    return
+                }
 
-                // Wrap inside an EditedMediaItemSequence
-                val sequence = EditedMediaItemSequence(listOf(editedItem))
+                Log.i("VideoTranscoder", "🎬 Starting transcode: $input → $output")
 
-                // Then a Composition with that sequence
-                val composition = Composition.Builder(listOf(sequence)).build()
+                // Media3: build source MediaItem
+                val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
-                val transformer = Transformer.Builder(context)
+                // Request configuration: hardware-accelerated, 720p H.264 + AAC
+                val transformRequest = TransformationRequest.Builder()
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .setResolution(1280, 720)          // downscale to 720p if higher
+                    .setVideoBitrate(2_000_000)        // ~2 Mbps target
+                    .build()
+
+                val transformer = Transformer.Builder(context)
+                    .setTransformationRequest(transformRequest)
                     .addListener(object : Transformer.Listener {
-                        override fun onCompleted(
-                            composition: Composition,
-                            exportResult: ExportResult
-                        ) {
-                            Log.i("VideoTranscoder", "✅ Done: ${exportResult.fileSizeBytes} bytes")
+                        override fun onCompleted(exportResult: ExportResult) {
+                            Log.i("VideoTranscoder", "✅ Transcode done: $output")
                             result.success(output)
                         }
 
                         override fun onError(
-                            composition: Composition,
                             exportResult: ExportResult,
                             exception: ExportException
                         ) {
-                            Log.e("VideoTranscoder", "❌ Error: ${exception.message}")
+                            Log.e("VideoTranscoder", "❌ Transcode error: ${exception.message}")
                             result.error("TRANSFORM_ERROR", exception.message, null)
                         }
                     })
                     .build()
 
-                transformer.start(composition, output)
+                transformer.start(mediaItem, output)
 
             } catch (e: Exception) {
-                Log.e("VideoTranscoder", "Exception: ${e.message}")
+                Log.e("VideoTranscoder", "❌ Reflect/Setup failed: ${e.message}", e)
                 result.error("REFLECT_FAIL", e.message, null)
             }
 
