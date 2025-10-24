@@ -33,8 +33,8 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
                 // --- Choose one of the following two lines ---
-                val effects = Effects(emptyList(), emptyList()) // ① baseline: no scaling
-                // val effects = Effects(emptyList(), listOf(ScaleAndRotateTransformation.Builder().setScale(0.5f, 0.5f).setRotationDegrees(0f).build())) // ② test scaling
+               // val effects = Effects(emptyList(), emptyList()) // ① baseline: no scaling
+                 val effects = Effects(emptyList(), listOf(ScaleAndRotateTransformation.Builder().setScale(0.5f, 0.5f).setRotationDegrees(0f).build())) // ② test scaling
 
                 val request = TransformationRequest.Builder()
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
