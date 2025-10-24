@@ -43,7 +43,6 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
                 val transformer = Transformer.Builder(context)
                     .setTransformationRequest(request)
-                    .setUseOpenGl(true) // ensure GPU pipeline initialized
                     .addListener(object : Transformer.Listener {
                         override fun onCompleted(
                             composition: Composition,
@@ -84,5 +83,3 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 }
-
-
