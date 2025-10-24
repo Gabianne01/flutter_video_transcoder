@@ -6,7 +6,6 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.transformer.Transformer
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
-import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
@@ -28,22 +27,18 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             val input = call.argument<String>("input")!!
             val output = call.argument<String>("output")!!
 
-            val inputItem = EditedMediaItem.Builder(
-                MediaItem.fromUri(Uri.fromFile(File(input)))
-            ).build()
-
-            val composition = Composition.Builder(inputItem).build()
+            val mediaItem = MediaItem.fromUri(Uri.fromFile(File(input)))
+            val edited = EditedMediaItem.Builder(mediaItem).build()
 
             val transformer = Transformer.Builder(context)
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
                 .setAudioMimeType(MimeTypes.AUDIO_AAC)
                 .addListener(object : Transformer.Listener {
-                    override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                    override fun onCompleted(exportResult: ExportResult) {
                         result.success(output)
                     }
 
                     override fun onError(
-                        composition: Composition,
                         exportResult: ExportResult,
                         exception: ExportException
                     ) {
@@ -52,7 +47,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 })
                 .build()
 
-            transformer.start(composition, output)
+            transformer.start(edited, output)
 
         } else {
             result.notImplemented()
