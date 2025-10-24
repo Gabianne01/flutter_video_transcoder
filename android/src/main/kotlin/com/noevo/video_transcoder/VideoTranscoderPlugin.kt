@@ -32,13 +32,18 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
                 val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
-                // --- Choose one of the following two lines ---
-               // val effects = Effects(emptyList(), emptyList()) // ① baseline: no scaling
-                 val effects = Effects(emptyList(), listOf(ScaleAndRotateTransformation.Builder().setScale(0.5f, 0.5f).setRotationDegrees(0f).build())) // ② test scaling
+                // Downscale to 720p while maintaining aspect ratio
+                val scaleTransform = ScaleAndRotateTransformation.Builder()
+                    .setScaleToFitHeight(720) // fits height, preserves aspect ratio
+                    .setRotationDegrees(0f)
+                    .build()
+
+                val effects = Effects(emptyList(), listOf(scaleTransform))
 
                 val request = TransformationRequest.Builder()
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .setVideoTargetBitrate(2_500_000) // 2.5 Mbps target bitrate
                     .build()
 
                 val transformer = Transformer.Builder(context)
@@ -83,3 +88,4 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 }
+
