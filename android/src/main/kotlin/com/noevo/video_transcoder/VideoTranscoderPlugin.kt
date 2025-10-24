@@ -3,7 +3,6 @@ package com.noevo.video_transcoder
 import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.common.util.Size
 import androidx.media3.effect.ScaleAndRotateTransformation
 import androidx.media3.transformer.*
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -27,38 +26,34 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             val output = call.argument<String>("output")!!
 
             try {
-                val inputFile = File(input)
-                val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
+                val mediaItem = MediaItem.fromUri(Uri.fromFile(File(input)))
 
-                // Target height 720p. Scale factor computed later by video processor.
+                // Basic down-scale: halve both width and height (~540 p from 1080 p)
                 val scaleTransform = ScaleAndRotateTransformation.Builder()
-                    .setScale(0.5f, 0.5f) // default ratio (roughly halves 1080p)
+                    .setScale(0.5f, 0.5f)
                     .build()
 
-                val effects = Effects(listOf(scaleTransform), emptyList())
+                // 👇 NOTE the argument order: first audioProcessors, then videoEffects
+                val effects = Effects(emptyList(), listOf(scaleTransform))
 
-                val transformationRequest = TransformationRequest.Builder()
+                val request = TransformationRequest.Builder()
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
                     .build()
 
                 val transformer = Transformer.Builder(context)
-                    .setTransformationRequest(transformationRequest)
+                    .setTransformationRequest(request)
                     .addListener(object : Transformer.Listener {
                         override fun onCompleted(
                             composition: Composition,
                             exportResult: ExportResult
-                        ) {
-                            result.success(output)
-                        }
+                        ) = result.success(output)
 
                         override fun onError(
                             composition: Composition,
                             exportResult: ExportResult,
                             exception: ExportException
-                        ) {
-                            result.error("TRANSFORM_ERROR", exception.message, null)
-                        }
+                        ) = result.error("TRANSFORM_ERROR", exception.message, null)
                     })
                     .build()
 
@@ -81,3 +76,4 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 }
+
