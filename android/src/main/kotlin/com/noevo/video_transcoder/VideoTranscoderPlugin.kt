@@ -3,8 +3,7 @@ package com.noevo.video_transcoder
 import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.effect.ScaleToFitEffect
-import androidx.media3.effect.VideoEffects
+import androidx.media3.effect.ScaleAndRotateTransformation
 import androidx.media3.transformer.*
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
@@ -29,14 +28,15 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             try {
                 val mediaItem = MediaItem.fromUri(Uri.fromFile(File(input)))
 
-                // --- Downscale effect: keep aspect ratio, fit to 720px height ---
-                val scaleEffect = ScaleToFitEffect(ScaleToFitEffect.ScalingLogic.FIT)
-                val videoEffects = VideoEffects(listOf(scaleEffect))
-
-                // --- Transformation setup ---
+                // --- transformation parameters ---
                 val transformationRequest = TransformationRequest.Builder()
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .build()
+
+                // --- simple scale transform: fit to 720p height ---
+                val scaleTransform = ScaleAndRotateTransformation.Builder()
+                    .setScaleToFitHeight(720)
                     .build()
 
                 val transformer = Transformer.Builder(context)
@@ -60,7 +60,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     .build()
 
                 val edited = EditedMediaItem.Builder(mediaItem)
-                    .setEffects(videoEffects)
+                    .setEffects(listOf(scaleTransform))
                     .build()
 
                 val sequence = EditedMediaItemSequence(listOf(edited))
@@ -69,7 +69,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 transformer.start(composition, output)
 
             } catch (e: Exception) {
-                result.error("REFLECT_FAIL", e.message, null)
+                result.error("SETUP_FAIL", e.message, null)
             }
         } else {
             result.notImplemented()
@@ -78,3 +78,4 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 }
+
