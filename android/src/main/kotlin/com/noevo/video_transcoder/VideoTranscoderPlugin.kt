@@ -36,25 +36,15 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
                 val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
-                // Downscale to 720p
+                // Build transformation request (simplified for 1.8.0)
                 val request = TransformationRequest.Builder()
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
-                    .setOutputHeightPx(720) // <-- correct method name in 1.8.0
                     .build()
 
                 val transformer = Transformer.Builder(context)
-                    .build() // in 1.8.0, we apply the request directly in start()
-
-                val edited = EditedMediaItem.Builder(mediaItem).build()
-                val sequence = EditedMediaItemSequence(listOf(edited))
-                val composition = Composition.Builder(listOf(sequence)).build()
-
-                transformer.start(
-                    composition,
-                    output,
-                    request, // new param for 1.8.0 API: apply transformation request here
-                    object : Transformer.Listener {
+                    .setTransformationRequest(request)
+                    .addListener(object : Transformer.Listener {
                         override fun onCompleted(
                             composition: Composition,
                             exportResult: ExportResult
@@ -71,8 +61,15 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                             Log.e("VideoTranscoder", "❌ Transcode failed: ${exception.message}")
                             result.error("TRANSFORM_ERROR", exception.message, null)
                         }
-                    }
-                )
+                    })
+                    .build()
+
+                // Build editable sequence
+                val edited = EditedMediaItem.Builder(mediaItem).build()
+                val sequence = EditedMediaItemSequence(listOf(edited))
+                val composition = Composition.Builder(listOf(sequence)).build()
+
+                transformer.start(composition, output)
 
             } catch (e: Exception) {
                 Log.e("VideoTranscoder", "Exception during setup: ${e.message}")
@@ -85,4 +82,5 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 }
+
 
