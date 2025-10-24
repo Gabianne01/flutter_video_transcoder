@@ -3,10 +3,11 @@ package com.noevo.video_transcoder
 import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.transformer.Transformer
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
-import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.Transformer
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -29,16 +30,21 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
             val mediaItem = MediaItem.fromUri(Uri.fromFile(File(input)))
             val edited = EditedMediaItem.Builder(mediaItem).build()
+            val composition = Composition.Builder(listOf(edited)).build()
 
             val transformer = Transformer.Builder(context)
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
                 .setAudioMimeType(MimeTypes.AUDIO_AAC)
                 .addListener(object : Transformer.Listener {
-                    override fun onCompleted(exportResult: ExportResult) {
+                    override fun onCompleted(
+                        composition: Composition,
+                        exportResult: ExportResult
+                    ) {
                         result.success(output)
                     }
 
                     override fun onError(
+                        composition: Composition,
                         exportResult: ExportResult,
                         exception: ExportException
                     ) {
@@ -47,8 +53,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 })
                 .build()
 
-            transformer.start(edited, output)
-
+            transformer.start(composition, output)
         } else {
             result.notImplemented()
         }
