@@ -1,0 +1,35 @@
+group 'com.noevo.video_transcoder'
+version '1.0'
+
+buildscript {
+    ext.kotlin_version = '1.9.23'
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+android {
+    namespace "com.noevo.video_transcoder"
+    compileSdkVersion 34
+
+    defaultConfig {
+        minSdkVersion 21
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+dependencies {
+    implementation "androidx.media3:media3-transformer:1.4.1"
+    implementation "androidx.media3:media3-common:1.4.1"
+}
