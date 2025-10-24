@@ -28,20 +28,33 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             Log.i("VideoTranscoder", "🎬 Transcoding: $input → $output")
 
             try {
+                // Build a MediaItem
                 val mediaItem = MediaItem.fromUri(Uri.fromFile(File(input)))
                 val editedItem = EditedMediaItem.Builder(mediaItem).build()
-                val composition = Composition.Builder(listOf(editedItem)).build()
+
+                // Wrap inside an EditedMediaItemSequence
+                val sequence = EditedMediaItemSequence(listOf(editedItem))
+
+                // Then a Composition with that sequence
+                val composition = Composition.Builder(listOf(sequence)).build()
 
                 val transformer = Transformer.Builder(context)
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
                     .addListener(object : Transformer.Listener {
-                        override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                        override fun onCompleted(
+                            composition: Composition,
+                            exportResult: ExportResult
+                        ) {
                             Log.i("VideoTranscoder", "✅ Done: ${exportResult.fileSizeBytes} bytes")
                             result.success(output)
                         }
 
-                        override fun onError(composition: Composition, exportResult: ExportResult, exception: ExportException) {
+                        override fun onError(
+                            composition: Composition,
+                            exportResult: ExportResult,
+                            exception: ExportException
+                        ) {
                             Log.e("VideoTranscoder", "❌ Error: ${exception.message}")
                             result.error("TRANSFORM_ERROR", exception.message, null)
                         }
@@ -51,7 +64,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 transformer.start(composition, output)
 
             } catch (e: Exception) {
-                Log.e("VideoTranscoder", "Reflect fail: ${e.message}")
+                Log.e("VideoTranscoder", "Exception: ${e.message}")
                 result.error("REFLECT_FAIL", e.message, null)
             }
 
