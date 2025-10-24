@@ -4,7 +4,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.effect.ScaleAndRotateTransformation
+import androidx.media3.effect.Presentation
 import androidx.media3.transformer.*
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
@@ -37,20 +37,18 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
                 val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
-                // Downscale to 720p by scaling to 1/3 height roughly (for 2160p → 720p)
-                val scaleTransform = ScaleAndRotateTransformation.Builder()
-                    .setScale(0.33f, 0.33f)
-                    .setRotationDegrees(0f)
-                    .build()
+                // --- Create scaling effect for 720p ---
+                // Presentation.createForHeight() ensures proper aspect ratio
+                val presentation = Presentation.createForHeight(720)
+                val effects = Effects(emptyList(), listOf(presentation))
 
-                val effects = Effects(emptyList(), listOf(scaleTransform))
-
+                // --- Define transformation parameters ---
                 val request = TransformationRequest.Builder()
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
-                    .setVideoBitrate(2_500_000) // available in 1.5.1
                     .build()
 
+                // --- Create transformer ---
                 val transformer = Transformer.Builder(context)
                     .setTransformationRequest(request)
                     .addListener(object : Transformer.Listener {
@@ -73,6 +71,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     })
                     .build()
 
+                // --- Build composition ---
                 val edited = EditedMediaItem.Builder(mediaItem)
                     .setEffects(effects)
                     .build()
@@ -93,5 +92,3 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 }
-
-

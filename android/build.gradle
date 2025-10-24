@@ -16,9 +16,20 @@ apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
 android {
-  namespace "com.noevo.video_transcoder"
-  compileSdkVersion 34
-  defaultConfig { minSdkVersion 21 }
+    namespace "com.noevo.video_transcoder"
+    compileSdkVersion 34
+
+    defaultConfig {
+        minSdkVersion 23
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
 }
 
 repositories {
@@ -27,7 +38,12 @@ repositories {
 }
 
 dependencies {
-  implementation "androidx.media3:media3-transformer:1.5.1"
-  implementation "androidx.media3:media3-common:1.5.1"
-  implementation "androidx.media3:media3-effect:1.5.1"
+    // --- Media3 core transformer stack (v1.8.0) ---
+    implementation "androidx.media3:media3-transformer:1.8.0"
+    implementation "androidx.media3:media3-common:1.8.0"
+    implementation "androidx.media3:media3-effect:1.8.0"
+    implementation "androidx.media3:media3-muxer:1.8.0" // needed for mp4 output
+
+    // --- Logging / utilities (optional) ---
+    implementation "androidx.annotation:annotation:1.8.0"
 }
