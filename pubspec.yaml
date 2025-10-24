@@ -1,0 +1,16 @@
+name: video_transcoder
+description: Lightweight video transcoder using system hardware encoders.
+version: 0.0.1
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.noevo.video_transcoder
+        pluginClass: VideoTranscoderPlugin
+      ios:
+        pluginClass: VideoTranscoderPlugin
+dependencies:
+  flutter:
+    sdk: flutter
