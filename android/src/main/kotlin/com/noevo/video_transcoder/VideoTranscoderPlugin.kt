@@ -20,6 +20,11 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         if (call.method == "transcodeToSafeH264") {
             val input = call.argument<String>("input")!!
             val output = call.argument<String>("output")!!
+            android.util.Log.i(
+    "VideoTranscoder",
+    "🎥 Input file: $input exists=${File(input).exists()} size=${File(input).length()}"
+)
+
 
             try {
                 val mediaItemCls = Class.forName("androidx.media3.common.MediaItem")
