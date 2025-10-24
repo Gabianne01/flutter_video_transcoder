@@ -4,7 +4,6 @@ import android.net.Uri
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.effect.Presentation
 import androidx.media3.transformer.*
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
@@ -37,18 +36,13 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
                 val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
-                // --- Create scaling effect for 720p ---
-                // Presentation.createForHeight() ensures proper aspect ratio
-                val presentation = Presentation.createForHeight(720)
-                val effects = Effects(emptyList(), listOf(presentation))
-
-                // --- Define transformation parameters ---
+                // Tell transformer we want to force H.264 output and downscale to 720p height
                 val request = TransformationRequest.Builder()
                     .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                    .setOutputHeight(720) // downscale to 720p max height
                     .build()
 
-                // --- Create transformer ---
                 val transformer = Transformer.Builder(context)
                     .setTransformationRequest(request)
                     .addListener(object : Transformer.Listener {
@@ -71,11 +65,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     })
                     .build()
 
-                // --- Build composition ---
-                val edited = EditedMediaItem.Builder(mediaItem)
-                    .setEffects(effects)
-                    .build()
-
+                val edited = EditedMediaItem.Builder(mediaItem).build()
                 val sequence = EditedMediaItemSequence(listOf(edited))
                 val composition = Composition.Builder(listOf(sequence)).build()
 
