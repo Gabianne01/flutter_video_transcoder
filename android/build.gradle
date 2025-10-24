@@ -16,12 +16,9 @@ apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
 android {
-    namespace "com.noevo.video_transcoder"
-    compileSdkVersion 35
-
-    defaultConfig {
-        minSdkVersion 21
-    }
+  namespace "com.noevo.video_transcoder"
+  compileSdkVersion 34
+  defaultConfig { minSdkVersion 21 }
 }
 
 repositories {
@@ -30,6 +27,7 @@ repositories {
 }
 
 dependencies {
-    implementation "androidx.media3:media3-transformer:1.5.1"
-    implementation "androidx.media3:media3-common:1.5.1"
+  implementation "androidx.media3:media3-transformer:1.5.1"
+  implementation "androidx.media3:media3-common:1.5.1"
+  implementation "androidx.media3:media3-effect:1.5.1"
 }
