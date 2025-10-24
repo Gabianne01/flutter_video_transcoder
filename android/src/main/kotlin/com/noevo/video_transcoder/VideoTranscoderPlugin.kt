@@ -29,8 +29,8 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             val output = call.argument<String>("output")!!
 
             val mediaItem = MediaItem.fromUri(Uri.fromFile(File(input)))
-            val edited = EditedMediaItem.Builder(mediaItem).build()
-            val composition = Composition.Builder(listOf(edited)).build()
+            val editedItem = EditedMediaItem.Builder(mediaItem).build()
+            val composition = Composition.Builder(listOf(editedItem)).build()
 
             val transformer = Transformer.Builder(context)
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
