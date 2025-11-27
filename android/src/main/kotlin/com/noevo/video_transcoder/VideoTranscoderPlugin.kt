@@ -1,19 +1,28 @@
 package com.noevo.video_transcoder
-
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.effect.ScaleAndRotateTransformation
-import androidx.media3.transformer.*
+import androidx.media3.effect.Presentation
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.DefaultEncoderFactory
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.Effects
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.TransformationRequest
+import androidx.media3.transformer.Transformer
+import androidx.media3.transformer.VideoEncoderSettings
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
-import kotlin.math.min
+import kotlin.math.roundToInt
 
 class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
+
     private lateinit var channel: MethodChannel
     private lateinit var context: android.content.Context
 
@@ -24,91 +33,193 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-        if (call.method == "transcodeToSafeH264") {
-            val input = call.argument<String>("input")!!
-            val output = call.argument<String>("output")!!
-
-            try {
-                val inputFile = File(input)
-                if (!inputFile.exists()) {
-                    result.error("NO_INPUT", "Input file not found at $input", null)
-                    return
-                }
-
-                Log.i("VideoTranscoder", "🎬 Starting transcode: $input → $output")
-
-                val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
-
-                // --- Step 1: Read video resolution ---
-                val retriever = MediaMetadataRetriever()
-                retriever.setDataSource(context, Uri.fromFile(inputFile))
-                val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
-                val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
-                retriever.release()
-
-                // --- Step 2: Compute scale factor ---
-                var scaleX = 1.0f
-                var scaleY = 1.0f
-                if (height > 720) {
-                    val scale = 720f / height.toFloat()
-                    scaleX = scale
-                    scaleY = scale
-                }
-
-                Log.i("VideoTranscoder", "📏 Source=${width}x$height → Scale=(${scaleX}x${scaleY})")
-
-                val scaleTransform = ScaleAndRotateTransformation.Builder()
-                    .setScale(scaleX, scaleY)
-                    .setRotationDegrees(0f)
-                    .build()
-
-                val effects = Effects(emptyList(), listOf(scaleTransform))
-
-                // --- Step 3: Request H.264 + AAC output ---
-                val request = TransformationRequest.Builder()
-                    .setVideoMimeType(MimeTypes.VIDEO_H264)
-                    .setAudioMimeType(MimeTypes.AUDIO_AAC)
-                    .build()
-
-                val transformer = Transformer.Builder(context)
-                    .addListener(object : Transformer.Listener {
-                        override fun onCompleted(composition: Composition, exportResult: ExportResult) {
-                            Log.i("VideoTranscoder", "✅ Transcode completed: $output")
-                            result.success(output)
-                        }
-
-                        override fun onError(
-                            composition: Composition,
-                            exportResult: ExportResult,
-                            exception: ExportException
-                        ) {
-                            Log.e("VideoTranscoder", "❌ Transcode failed: ${exception.message}")
-                            result.error("TRANSFORM_ERROR", exception.message, null)
-                        }
-                    })
-                    .build()
-
-                val edited = EditedMediaItem.Builder(mediaItem)
-                    .setEffects(effects)
-                    .build()
-
-                val sequence = EditedMediaItemSequence(listOf(edited))
-                val composition = Composition.Builder(listOf(sequence)).build()
-
-                transformer.start(composition, output)
-
-            } catch (e: Exception) {
-                Log.e("VideoTranscoder", "Exception during setup: ${e.message}")
-                result.error("SETUP_FAIL", e.message, null)
-            }
-        } else {
+        if (call.method != "transcodeToSafeH264") {
             result.notImplemented()
+            return
+        }
+
+        val input = call.argument<String>("input")
+        val output = call.argument<String>("output")
+
+        if (input.isNullOrBlank() || output.isNullOrBlank()) {
+            result.error("BAD_ARGS", "input and output paths are required", null)
+            return
+        }
+
+        // Optional overrides from Dart, with sane defaults
+        val maxHeight = call.argument<Int>("maxHeight") ?: 720
+        val targetBitrate = call.argument<Int>("bitrate") ?: 1_500_000
+
+        try {
+            val inputFile = File(input)
+            if (!inputFile.exists()) {
+                result.error("NO_INPUT", "Input file not found at $input", null)
+                return
+            }
+
+            // Make sure output directory exists
+            val outputFile = File(output)
+            outputFile.parentFile?.let { parent ->
+                if (!parent.exists()) parent.mkdirs()
+            }
+
+            Log.i("VideoTranscoder", "🎬 Starting transcode: $input → $output")
+
+            val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
+
+            // --- Step 1: Read original resolution ---
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(context, Uri.fromFile(inputFile))
+            val srcWidth =
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                    ?.toIntOrNull() ?: 0
+            val srcHeight =
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                    ?.toIntOrNull() ?: 0
+            retriever.release()
+
+            if (srcWidth <= 0 || srcHeight <= 0) {
+                Log.w("VideoTranscoder", "Could not read resolution, leaving as-is.")
+                // Fallback: just transcode codec at lower bitrate, no res change
+            }
+
+            // --- Step 2: Natural scale – no upscaling ---
+            // - If srcHeight > maxHeight → downscale
+            // - else → keep original size
+            val scale =
+                if (srcHeight > 0 && srcHeight > maxHeight) {
+                    maxHeight.toFloat() / srcHeight.toFloat()
+                } else {
+                    1f
+                }
+
+            val scaledW =
+                if (srcWidth > 0) (srcWidth * scale).roundToInt() else srcWidth
+            val scaledH =
+                if (srcHeight > 0) (srcHeight * scale).roundToInt() else srcHeight
+
+            // --- Step 3: Align to 16px to avoid chroma smear ---
+            fun align16(x: Int): Int = if (x > 0) (x / 16) * 16 else x
+
+            var outW = align16(scaledW)
+            var outH = align16(scaledH)
+
+            // Safety: never drop to 0, fall back to original if needed
+            if (outW <= 0 || outH <= 0) {
+                outW = align16(srcWidth)
+                outH = align16(srcHeight)
+            }
+
+            Log.i(
+                "VideoTranscoder",
+                "📏 Source=${srcWidth}x$srcHeight, scale=${"%.3f".format(scale)}, output=${outW}x$outH"
+            )
+
+            // --- Step 4: Presentation effect – crop/scale into aligned frame ---
+            val presentation = Presentation.createForWidthAndHeight(
+                outW,
+                outH,
+                Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+            )
+
+            // Single video effect: just the presentation (no double-scaling)
+            val videoEffects = listOf(presentation)
+            val effects = Effects(
+                /* audioProcessors = */ emptyList(),
+                /* videoEffects  =   */ videoEffects
+            )
+
+            val edited = EditedMediaItem.Builder(mediaItem)
+                .setEffects(effects)
+                .build()
+
+            val sequence = EditedMediaItemSequence(listOf(edited))
+            val composition = Composition.Builder(listOf(sequence)).build()
+
+            // --- Step 5: Request H.264 + AAC + controlled bitrate ---
+            val request = TransformationRequest.Builder()
+                .setVideoMimeType(MimeTypes.VIDEO_H264)
+                .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                .build()
+
+            val videoEncoderSettings = VideoEncoderSettings.Builder()
+                .setBitrate(targetBitrate)
+                .build()
+
+            val encoderFactory = DefaultEncoderFactory.Builder(context)
+                .setRequestedVideoEncoderSettings(videoEncoderSettings)
+                .setEnableFallback(true)
+                .build()
+
+            val transformer = Transformer.Builder(context)
+                .setEncoderFactory(encoderFactory)
+                .setTransformationRequest(request)
+                .addListener(object : Transformer.Listener {
+                    override fun onCompleted(
+                        composition: Composition,
+                        exportResult: ExportResult
+                    ) {
+                        try {
+                            val originalSize = inputFile.length()
+                            val outFile = File(output)
+                            val compressedSize = outFile.length()
+
+                            Log.i(
+                                "VideoTranscoder",
+                                "✅ Completed: original=${originalSize}B, compressed=${compressedSize}B"
+                            )
+
+                            // Issue #7-style guard: if compression is useless, keep original content
+                            if (originalSize > 0 && compressedSize > 0) {
+                                val ratio =
+                                    compressedSize.toFloat() / originalSize.toFloat()
+                                if (ratio >= 0.95f) {
+                                    Log.i(
+                                        "VideoTranscoder",
+                                        "ℹ️ Compressed file is >=95% of original. Copying original over."
+                                    )
+                                    try {
+                                        inputFile.copyTo(outFile, overwrite = true)
+                                    } catch (e: Exception) {
+                                        Log.w(
+                                            "VideoTranscoder",
+                                            "Failed to overwrite with original: ${e.message}"
+                                        )
+                                    }
+                                }
+                            }
+
+                            result.success(output)
+                        } catch (e: Exception) {
+                            Log.e("VideoTranscoder", "Post-process error: ${e.message}")
+                            result.error("POST_PROCESS", e.message, null)
+                        }
+                    }
+
+                    override fun onError(
+                        composition: Composition,
+                        exportResult: ExportResult,
+                        exception: ExportException
+                    ) {
+                        Log.e(
+                            "VideoTranscoder",
+                            "❌ Transform error: ${exception.message}",
+                            exception
+                        )
+                        result.error("TRANSFORM_ERROR", exception.message, null)
+                    }
+                })
+                .build()
+
+            transformer.start(composition, output)
+
+        } catch (e: Exception) {
+            Log.e("VideoTranscoder", "Exception during setup: ${e.message}", e)
+            result.error("SETUP_FAIL", e.message, null)
         }
     }
 
-    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        // no-op
+    }
 }
-
-
-
-

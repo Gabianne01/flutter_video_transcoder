@@ -38,12 +38,10 @@ repositories {
 }
 
 dependencies {
-    // --- Media3 core transformer stack (v1.8.0) ---
-    implementation "androidx.media3:media3-transformer:1.8.0"
-    implementation "androidx.media3:media3-common:1.8.0"
-    implementation "androidx.media3:media3-effect:1.8.0"
-    implementation "androidx.media3:media3-muxer:1.8.0" // needed for mp4 output
+    implementation "androidx.media3:media3-transformer:1.4.1"
+    implementation "androidx.media3:media3-common:1.4.1"
+    implementation "androidx.media3:media3-effect:1.4.1"
+    implementation "androidx.media3:media3-muxer:1.4.1"
 
-    // --- Logging / utilities (optional) ---
     implementation "androidx.annotation:annotation:1.8.0"
 }
