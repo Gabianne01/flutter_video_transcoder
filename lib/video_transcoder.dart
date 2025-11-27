@@ -15,7 +15,7 @@ class VideoTranscoder {
     String input,
     String output, {
     int maxHeight = 720,
-    int bitrate = 1_500_000,
+    int bitrate = 1500000,
   }) async {
     return await _channel.invokeMethod('transcodeToSafeH264', {
       'input': input,
