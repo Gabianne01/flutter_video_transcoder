@@ -64,7 +64,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         outputFile.parentFile?.mkdirs()
 
         try {
-            // ===== 1. Extract basic video metadata =====
+            // ===== 1. Extract metadata =====
             val retriever = MediaMetadataRetriever()
             retriever.setDataSource(context, Uri.fromFile(inputFile))
 
@@ -87,29 +87,29 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 return
             }
 
-            // ===== 2. Compute display-space size (after rotation) =====
+            // ===== 2. Compute display-space size (what user actually sees) =====
             val displayW = if (rotation == 90 || rotation == 270) rawH else rawW
             val displayH = if (rotation == 90 || rotation == 270) rawW else rawH
 
             // ===== 3. Downscale (never upscale) =====
             val scale = if (displayH > maxHeight) {
                 maxHeight.toFloat() / displayH.toFloat()
-            } else 1f
+            } else {
+                1f
+            }
 
             var targetW = (displayW * scale).toInt().coerceAtLeast(1)
             var targetH = (displayH * scale).toInt().coerceAtLeast(1)
 
-            // We do NOT align or crop for encoder safety anymore.
-            // This resolution is what Presentation will output.
-            val isMod16Aligned =
-                (targetW % 16 == 0) && (targetH % 16 == 0)
+            // No alignment for safety anymore; only used for choosing encoder path.
+            val isMod16Aligned = (targetW % 16 == 0) && (targetH % 16 == 0)
 
             Log.i(
                 "VideoTranscoder",
                 "raw=${rawW}x$rawH rot=$rotation° → display=${displayW}x$displayH → target=${targetW}x$targetH (mod16=$isMod16Aligned)"
             )
 
-            // ===== 4. Build Presentation (no black bars, center crop) =====
+            // ===== 4. Presentation: crop-to-fit, no black bars =====
             val presentation = Presentation.createForWidthAndHeight(
                 targetW,
                 targetH,
@@ -117,12 +117,13 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             )
 
             val effects = Effects(
-                emptyList(),                 // no audio effects
+                emptyList(),                 // no audio processors
                 listOf(presentation)         // single video effect
             )
 
-            // ===== 5. Build EditedMediaItem / Composition =====
+            // ===== 5. EditedMediaItem / Composition =====
             val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
+
             val edited = EditedMediaItem.Builder(mediaItem)
                 .setEffects(effects)
                 .setRemoveAudio(false)
@@ -131,31 +132,43 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             val sequence = EditedMediaItemSequence(listOf(edited))
             val composition = Composition.Builder(listOf(sequence)).build()
 
-            // ===== 6. Decide encoder path: HW vs SW =====
+            // ===== 6. Encoder selection logic =====
 
-            // Software-only selector: prefer non-hardware encoders.
-            val softwareOnlySelector = EncoderSelector { mimeType ->
-                val supported = EncoderUtil.getSupportedEncoders(mimeType)
-                val software = supported.filter {
-                    !EncoderUtil.isHardwareAccelerated(it, mimeType)
+            // Strict Google software encoder: only OMX.google.h264.encoder, no fallback.
+            val googleSwOnlySelector = EncoderSelector { mimeType ->
+                val encoders = EncoderUtil.getSupportedEncoders(mimeType)
+                val googleSw = encoders.filter {
+                    it.name.equals("OMX.google.h264.encoder", ignoreCase = true)
                 }
-                if (software.isNotEmpty()) {
-                    ImmutableList.copyOf(software)
+
+                if (googleSw.isNotEmpty()) {
+                    Log.i(
+                        "VideoTranscoder",
+                        "Using strict Google SW encoder for mimeType=$mimeType " +
+                            "→ ${googleSw.joinToString { it.name }}"
+                    )
+                    ImmutableList.copyOf(googleSw)
                 } else {
-                    // Fallback: if no pure SW encoder, use whatever exists.
-                    supported
+                    // Option A: no fallback to other encoders.
+                    Log.e(
+                        "VideoTranscoder",
+                        "No OMX.google.h264.encoder found for mimeType=$mimeType. " +
+                            "Returning empty encoder list → expect failure."
+                    )
+                    ImmutableList.of()
                 }
             }
 
-            // For aligned resolutions, we can safely use the default (HW if available).
             val chosenSelector: EncoderSelector =
                 if (isMod16Aligned) {
+                    Log.i("VideoTranscoder", "Using DEFAULT encoder selector (HW preferred).")
                     EncoderSelector.DEFAULT
                 } else {
-                    softwareOnlySelector
+                    Log.i("VideoTranscoder", "Unaligned → forcing OMX.google.h264.encoder only.")
+                    googleSwOnlySelector
                 }
 
-            // ===== 7. Encoder settings (bitrate only) =====
+            // ===== 7. Encoder settings (bitrate, nothing else) =====
             val encoderSettings = VideoEncoderSettings.Builder()
                 .setBitrate(targetBitrate)
                 .build()
@@ -163,11 +176,12 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             val encoderFactory = DefaultEncoderFactory.Builder(context)
                 .setRequestedVideoEncoderSettings(encoderSettings)
                 .setVideoEncoderSelector(chosenSelector)
-                // Keep fallback enabled so Media3 can adjust slightly if needed.
+                // We keep fallback enabled, but it only applies to *format*, not encoder list.
+                // Since we can return an empty encoder list, this won't silently switch back to HW.
                 .setEnableFallback(true)
                 .build()
 
-            // ===== 8. Build Transformer =====
+            // ===== 8. Transformer =====
             val transformer = Transformer.Builder(context)
                 .setEncoderFactory(encoderFactory)
                 .addListener(object : Transformer.Listener {
@@ -188,12 +202,11 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
                             // If compression is useless (<5% savings) → restore original.
                             if (originalSize > 0 && compressedSize > 0) {
-                                val ratio =
-                                    compressedSize.toFloat() / originalSize.toFloat()
+                                val ratio = compressedSize.toFloat() / originalSize.toFloat()
                                 if (ratio >= 0.95f) {
                                     Log.i(
                                         "VideoTranscoder",
-                                        "ℹ Restoring original file (compression not worth it)."
+                                        "ℹ Restoring original (compression not worth it)."
                                     )
                                     inputFile.copyTo(outputFile, overwrite = true)
                                 }
@@ -213,7 +226,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     ) {
                         Log.e(
                             "VideoTranscoder",
-                            "❌ Transform error, encoder=${exportResult.videoEncoderName}",
+                            "❌ Transform error, videoEncoder=${exportResult.videoEncoderName}",
                             exception
                         )
                         result.error("TRANSFORM_ERROR", exception.message, null)
@@ -221,7 +234,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 })
                 .build()
 
-            // ===== 9. Start export (1.8.0 signature) =====
+            // ===== 9. Start transformation (Media3 1.8.0) =====
             transformer.start(composition, outputPath)
 
         } catch (e: Exception) {
