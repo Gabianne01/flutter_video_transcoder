@@ -20,7 +20,6 @@ import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
-import kotlin.math.roundToInt
 
 class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
@@ -57,97 +56,85 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 return
             }
 
-            // Make sure output directory exists
             val outputFile = File(output)
-            outputFile.parentFile?.let { parent ->
-                if (!parent.exists()) parent.mkdirs()
-            }
+            outputFile.parentFile?.let { parent -> if (!parent.exists()) parent.mkdirs() }
 
             Log.i("VideoTranscoder", "🎬 Starting transcode: $input → $output")
 
             val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
-           // --- Step 1: Read raw coded resolution + rotation ---
-val retriever = MediaMetadataRetriever()
-retriever.setDataSource(context, Uri.fromFile(inputFile))
+            // --- Step 1: Read raw coded resolution + rotation ---
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(context, Uri.fromFile(inputFile))
 
-val rawW = retriever.extractMetadata(
-    MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH
-)?.toIntOrNull() ?: 0
+            val rawW = retriever.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH
+            )?.toIntOrNull() ?: 0
 
-val rawH = retriever.extractMetadata(
-    MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT
-)?.toIntOrNull() ?: 0
+            val rawH = retriever.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT
+            )?.toIntOrNull() ?: 0
 
-val rotationDegrees = retriever.extractMetadata(
-    MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION
-)?.toIntOrNull() ?: 0
+            val rotationDegrees = retriever.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION
+            )?.toIntOrNull() ?: 0
 
-retriever.release()
+            retriever.release()
 
-if (rawW <= 0 || rawH <= 0) {
-    Log.w("VideoTranscoder", "Could not read resolution; proceeding anyway")
-}
+            // --- Step 2: compute DISPLAY size (orientation-only effect) ---
+            val displayW = if (rotationDegrees == 90 || rotationDegrees == 270) rawH else rawW
+            val displayH = if (rotationDegrees == 90 || rotationDegrees == 270) rawW else rawH
 
-// --- Step 2: Compute DISPLAY size (orientation only affects display, not alignment) ---
-val displayW = if (rotationDegrees == 90 || rotationDegrees == 270) rawH else rawW
-val displayH = if (rotationDegrees == 90 || rotationDegrees == 270) rawW else rawH
+            // --- Step 3: natural downscale without upscaling ---
+            val scale = if (displayH > maxHeight) {
+                maxHeight.toFloat() / displayH.toFloat()
+            } else 1f
 
-// --- Step 3: Natural downscale (no upscaling) ---
-val scale = if (displayH > maxHeight) {
-    maxHeight.toFloat() / displayH.toFloat()
-} else 1f
+            val scaledW = (displayW * scale).toInt()
+            val scaledH = (displayH * scale).toInt()
 
-val scaledW = (displayW * scale).toInt()
-val scaledH = (displayH * scale).toInt()
+            // --- Step 4: alignment function ---
+            fun align16(x: Int): Int = if (x > 0) (x / 16) * 16 else x
 
-// --- Step 4: Align based on RAW coded orientation (not display orientation) ---
-val alignedForCodecW = align16(rawW)
-val alignedForCodecH = align16(rawH)
+            // --- Step 5: align based on CODEC (raw orientation) ---
+            val outW: Int
+            val outH: Int
 
-// Now align scaled output based on codec direction
-var outW: Int
-var outH: Int
+            if (rotationDegrees == 90 || rotationDegrees == 270) {
+                outW = align16(scaledH)  // display H → codec width
+                outH = align16(scaledW)  // display W → codec height
+            } else {
+                outW = align16(scaledW)
+                outH = align16(scaledH)
+            }
 
-if (rotationDegrees == 90 || rotationDegrees == 270) {
-    // Codec sees (rawW × rawH) but display uses swapped orientation
-    outW = align16(scaledH) // scaleH maps to codecWidth
-    outH = align16(scaledW) // scaleW maps to codecHeight
-} else {
-    outW = align16(scaledW)
-    outH = align16(scaledH)
-}
+            Log.i(
+                "VideoTranscoder",
+                "📏 raw=${rawW}x$rawH, rot=$rotationDegrees°, " +
+                "scaled=${scaledW}x$scaledH, aligned=${outW}x$outH"
+            )
 
-if (outW <= 0 || outH <= 0) {
-    outW = align16(displayW)
-    outH = align16(displayH)
-}
+            // --- Step 6: Presentation ONLY —
+            //     Media3 handles rotation internally safely (OpenGL path).
+            val presentation = Presentation.createForWidthAndHeight(
+                outW,
+                outH,
+                Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+            )
 
-Log.i(
-    "VideoTranscoder",
-    "📏 raw=${rawW}x$rawH, rot=$rotationDegrees°, final=${outW}x$outH"
-)
+            val effects = Effects(
+                emptyList(),        // audio processors
+                listOf(presentation)
+            )
 
-// --- Step 5: Presentation ONLY (Media3 handles rotation internally) ---
-val presentation = Presentation.createForWidthAndHeight(
-    outW,
-    outH,
-    Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
-)
-
-val effects = Effects(
-    /* audioProcessors = */ emptyList(),
-    /* videoEffects   = */ listOf(presentation)
-)
-
-val edited = EditedMediaItem.Builder(mediaItem)
-    .setEffects(effects)
-    .build()
+            val edited = EditedMediaItem.Builder(mediaItem)
+                .setEffects(effects)
+                .build()
 
             val sequence = EditedMediaItemSequence(listOf(edited))
             val composition = Composition.Builder(listOf(sequence)).build()
 
-            // --- Step 5: H.264 + AAC + bitrate control ---
+            // --- Step 7: H.264 + AAC + bitrate control ---
             val request = TransformationRequest.Builder()
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
                 .setAudioMimeType(MimeTypes.AUDIO_AAC)
@@ -166,42 +153,33 @@ val edited = EditedMediaItem.Builder(mediaItem)
                 .setEncoderFactory(encoderFactory)
                 .setTransformationRequest(request)
                 .addListener(object : Transformer.Listener {
+
                     override fun onCompleted(
                         composition: Composition,
                         exportResult: ExportResult
                     ) {
                         try {
                             val originalSize = inputFile.length()
-                            val outFile = File(output)
-                            val compressedSize = outFile.length()
+                            val compressedSize = outputFile.length()
 
                             Log.i(
                                 "VideoTranscoder",
                                 "✅ Completed: original=${originalSize}B, compressed=${compressedSize}B"
                             )
 
+                            // If compression useless (<5% savings) → restore original
                             if (originalSize > 0 && compressedSize > 0) {
                                 val ratio =
                                     compressedSize.toFloat() / originalSize.toFloat()
+
                                 if (ratio >= 0.95f) {
-                                    Log.i(
-                                        "VideoTranscoder",
-                                        "ℹ️ Compressed file is >=95% of original. Copying original over."
-                                    )
-                                    try {
-                                        inputFile.copyTo(outFile, overwrite = true)
-                                    } catch (e: Exception) {
-                                        Log.w(
-                                            "VideoTranscoder",
-                                            "Failed to overwrite with original: ${e.message}"
-                                        )
-                                    }
+                                    Log.i("VideoTranscoder", "ℹ Restoring original file.")
+                                    inputFile.copyTo(outputFile, overwrite = true)
                                 }
                             }
 
                             result.success(output)
                         } catch (e: Exception) {
-                            Log.e("VideoTranscoder", "Post-process error: ${e.message}")
                             result.error("POST_PROCESS", e.message, null)
                         }
                     }
@@ -211,11 +189,7 @@ val edited = EditedMediaItem.Builder(mediaItem)
                         exportResult: ExportResult,
                         exception: ExportException
                     ) {
-                        Log.e(
-                            "VideoTranscoder",
-                            "❌ Transform error: ${exception.message}",
-                            exception
-                        )
+                        Log.e("VideoTranscoder", "❌ Transform error", exception)
                         result.error("TRANSFORM_ERROR", exception.message, null)
                     }
                 })
@@ -224,12 +198,10 @@ val edited = EditedMediaItem.Builder(mediaItem)
             transformer.start(composition, output)
 
         } catch (e: Exception) {
-            Log.e("VideoTranscoder", "Exception during setup: ${e.message}", e)
+            Log.e("VideoTranscoder", "SETUP EXCEPTION", e)
             result.error("SETUP_FAIL", e.message, null)
         }
     }
 
-    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        // no-op
-    }
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 }
