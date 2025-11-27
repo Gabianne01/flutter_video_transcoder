@@ -12,15 +12,6 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
-/**
- * Minimal, safe, predictable H.264 transcoder:
- *  - No smears
- *  - No black bars
- *  - No upscaling
- *  - No aspect distortion
- *  - Rotation handled ONLY by Media3
- *  - Dimensions aligned to 16 IN DISPLAY SPACE
- */
 class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     private lateinit var channel: MethodChannel
@@ -38,28 +29,28 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             return
         }
 
-        val inputPath = call.argument<String>("input")
-        val outputPath = call.argument<String>("output")
+        val input = call.argument<String>("input")
+        val output = call.argument<String>("output")
 
         val maxHeight = call.argument<Int>("maxHeight") ?: 720
         val targetBitrate = call.argument<Int>("bitrate") ?: 1_600_000
 
-        if (inputPath.isNullOrBlank() || outputPath.isNullOrBlank()) {
-            result.error("BAD_ARGS", "Input/output missing", null)
+        if (input.isNullOrBlank() || output.isNullOrBlank()) {
+            result.error("BAD_ARGS", "input/output required", null)
             return
         }
 
-        val inputFile = File(inputPath)
-        val outputFile = File(outputPath)
+        val inputFile = File(input)
+        val outputFile = File(output)
         outputFile.parentFile?.mkdirs()
 
         if (!inputFile.exists()) {
-            result.error("NO_INPUT", "Input not found", null)
+            result.error("NO_INPUT", "Input file missing", null)
             return
         }
 
         try {
-            // --- Read metadata ---
+            // ---------- Read raw metadata ----------
             val retriever = MediaMetadataRetriever()
             retriever.setDataSource(context, Uri.fromFile(inputFile))
 
@@ -77,31 +68,32 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
             retriever.release()
 
-            // --- DISPLAY size (this is what we visually see) ---
+            // ---------- DISPLAY size (rotation-correct) ----------
             val displayW = if (rotation == 90 || rotation == 270) rawH else rawW
             val displayH = if (rotation == 90 || rotation == 270) rawW else rawH
 
-            // --- Downscale (never upscale) ---
+            // ---------- Downscale ----------
             val scale = if (displayH > maxHeight)
                 maxHeight.toFloat() / displayH.toFloat() else 1f
 
             var targetW = (displayW * scale).toInt()
             var targetH = (displayH * scale).toInt()
 
-            // --- Clamp: never produce tiny illegal sizes ---
+            // ---------- Clamp ----------
             if (targetW < 16) targetW = 16
             if (targetH < 16) targetH = 16
 
-            // --- Align to 16 (in DISPLAY space!) ---
+            // ---------- Alignment ----------
             fun align16(x: Int): Int = ((x + 15) / 16) * 16
-
             targetW = align16(targetW)
             targetH = align16(targetH)
 
-            Log.i("VideoSafeTranscoder",
-                "raw=${rawW}x$rawH rot=$rotation° display=${displayW}x$displayH → target=${targetW}x$targetH")
+            Log.i(
+                "SafeTranscoder",
+                "raw=${rawW}x${rawH} rot=$rotation° display=${displayW}x${displayH} → ${targetW}x${targetH}"
+            )
 
-            // --- Presentation effect: SCALE + CROP (NO BARS EVER) ---
+            // ---------- Presentation (NO BLACK BARS EVER) ----------
             val presentation = Presentation.createForWidthAndHeight(
                 targetW,
                 targetH,
@@ -113,6 +105,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 /* videoEffects = */ listOf(presentation)
             )
 
+            // ---------- Media Item ----------
             val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
             val edited = EditedMediaItem.Builder(mediaItem)
@@ -120,10 +113,13 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 .setRemoveAudio(false)
                 .build()
 
-            val composition = Composition.Builder(listOf(EditedMediaItemSequence(listOf(edited))))
-                .build()
+            val composition = Composition.Builder(
+                listOf(
+                    EditedMediaItemSequence(listOf(edited))
+                )
+            ).build()
 
-            // --- Request: simple, safe H.264 + AAC ---
+            // ---------- Request ----------
             val request = TransformationRequest.Builder()
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
                 .setAudioMimeType(MimeTypes.AUDIO_AAC)
@@ -135,7 +131,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
             val encoderFactory = DefaultEncoderFactory.Builder(context)
                 .setRequestedVideoEncoderSettings(encoderSettings)
-                .setEnableFallback(true) // fallback to software if needed
+                .setEnableFallback(true) // important: fallback to software encoder
                 .build()
 
             val transformer = Transformer.Builder(context)
@@ -150,15 +146,14 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                         val orig = inputFile.length()
                         val comp = outputFile.length()
 
-                        // Restore original if useless
+                        // Restore original if compression useless
                         if (orig > 0 && comp > 0) {
                             val ratio = comp.toFloat() / orig.toFloat()
                             if (ratio >= 0.95f) {
                                 inputFile.copyTo(outputFile, overwrite = true)
                             }
                         }
-
-                        result.success(outputPath)
+                        result.success(output)
                     }
 
                     override fun onError(
@@ -166,16 +161,16 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                         exportResult: ExportResult,
                         exception: ExportException
                     ) {
-                        Log.e("VideoSafeTranscoder", "ERROR", exception)
+                        Log.e("SafeTranscoder", "ERROR", exception)
                         result.error("TRANSFORM_FAIL", exception.message, null)
                     }
                 })
                 .build()
 
-            transformer.start(composition, outputPath)
+            transformer.start(composition, output)
 
         } catch (e: Exception) {
-            result.error("SETUP_FAIL", e.message, null)
+            result.error("SETUP_EXCEPTION", e.message, null)
         }
     }
 
