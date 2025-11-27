@@ -158,9 +158,6 @@ val edited = EditedMediaItem.Builder(mediaItem)
     .setEffects(effects)
     .build()
 
-val sequence = EditedMediaItemSequence(listOf(edited))
-val composition = Composition.Builder(listOf(sequence)).build()
-
 
             val sequence = EditedMediaItemSequence(listOf(edited))
             val composition = Composition.Builder(listOf(sequence)).build()
