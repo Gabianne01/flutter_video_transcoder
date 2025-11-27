@@ -47,7 +47,6 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             return
         }
 
-        // Optional overrides from Dart, with sane defaults
         val maxHeight = call.argument<Int>("maxHeight") ?: 720
         val targetBitrate = call.argument<Int>("bitrate") ?: 1_500_000
 
@@ -68,7 +67,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
             val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
-            // --- Step 1: Read original resolution (no manual rotation) ---
+            // --- Step 1: Read coded resolution + rotation ---
             val retriever = MediaMetadataRetriever()
             retriever.setDataSource(context, Uri.fromFile(inputFile))
 
@@ -79,47 +78,53 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
                     ?.toIntOrNull() ?: 0
 
-            // We DON'T use rotation metadata manually here.
-            // Media3 will auto-apply camera rotation if we don't override it.
+            val rotationDegrees =
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                    ?.toIntOrNull() ?: 0
+
             retriever.release()
 
             if (srcWidth <= 0 || srcHeight <= 0) {
                 Log.w("VideoTranscoder", "Could not read resolution, leaving as-is.")
             }
 
+            // Treat display size as after rotation (but we do NOT rotate manually!)
+            val isQuarterTurn = rotationDegrees == 90 || rotationDegrees == 270
+            val displayWidth = if (isQuarterTurn) srcHeight else srcWidth
+            val displayHeight = if (isQuarterTurn) srcWidth else srcHeight
+
             // --- Step 2: Natural scale – no upscaling ---
-            // If srcHeight > maxHeight → downscale, else keep original size.
             val scale =
-                if (srcHeight > 0 && srcHeight > maxHeight) {
-                    maxHeight.toFloat() / srcHeight.toFloat()
+                if (displayHeight > 0 && displayHeight > maxHeight) {
+                    maxHeight.toFloat() / displayHeight.toFloat()
                 } else {
                     1f
                 }
 
-            val scaledW =
-                if (srcWidth > 0) (srcWidth * scale).roundToInt() else srcWidth
-            val scaledH =
-                if (srcHeight > 0) (srcHeight * scale).roundToInt() else srcHeight
+            val scaledDisplayW =
+                if (displayWidth > 0) (displayWidth * scale).roundToInt() else displayWidth
+            val scaledDisplayH =
+                if (displayHeight > 0) (displayHeight * scale).roundToInt() else displayHeight
 
-            // --- Step 3: Align to 16px to avoid chroma issues ---
+            // --- Step 3: Align to 16px using display dims ---
             fun align16(x: Int): Int = if (x > 0) (x / 16) * 16 else x
 
-            var outW = align16(scaledW)
-            var outH = align16(scaledH)
+            var outW = align16(scaledDisplayW)
+            var outH = align16(scaledDisplayH)
 
-            // Safety: never drop to 0, fall back to original size
             if (outW <= 0 || outH <= 0) {
-                outW = align16(srcWidth)
-                outH = align16(srcHeight)
+                outW = align16(displayWidth)
+                outH = align16(displayHeight)
             }
 
             Log.i(
                 "VideoTranscoder",
-                "📏 Source=${srcWidth}x$srcHeight, " +
+                "📏 Source=${srcWidth}x$srcHeight (rot=$rotationDegrees), " +
+                    "display=${displayWidth}x$displayHeight, " +
                     "scale=${"%.3f".format(scale)}, output=${outW}x$outH"
             )
 
-            // --- Step 4: Presentation only – let Media3 handle orientation ---
+            // --- Step 4: Presentation ONLY — no manual rotation ---
             val presentation = Presentation.createForWidthAndHeight(
                 outW,
                 outH,
@@ -139,7 +144,7 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             val sequence = EditedMediaItemSequence(listOf(edited))
             val composition = Composition.Builder(listOf(sequence)).build()
 
-            // --- Step 5: Request H.264 + AAC + controlled bitrate ---
+            // --- Step 5: H.264 + AAC + bitrate control ---
             val request = TransformationRequest.Builder()
                 .setVideoMimeType(MimeTypes.VIDEO_H264)
                 .setAudioMimeType(MimeTypes.AUDIO_AAC)
@@ -172,7 +177,6 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                                 "✅ Completed: original=${originalSize}B, compressed=${compressedSize}B"
                             )
 
-                            // Guard: if compression is useless (>=95% of original), keep original
                             if (originalSize > 0 && compressedSize > 0) {
                                 val ratio =
                                     compressedSize.toFloat() / originalSize.toFloat()
