@@ -50,5 +50,5 @@ dependencies {
     implementation "androidx.annotation:annotation:1.8.0"
 
     // FFmpegKit 16KB build — THIS is all you need
-    implementation "com.arthenica:ffmpeg-kit-full-gpl:6.0-2"
+    implementation "com.arthenica.ffmpegkit:ffmpeg-kit-video:6.0"
 }
