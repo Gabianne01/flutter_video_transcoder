@@ -21,6 +21,8 @@ android {
 
     defaultConfig {
         minSdkVersion 23
+        // If ffmpeg-kit ever needs it:
+        consumerProguardFiles "consumer-rules.pro"
     }
 
     compileOptions {
@@ -38,10 +40,15 @@ repositories {
 }
 
 dependencies {
-    implementation "androidx.media3:media3-transformer:1.8.0"
-    implementation "androidx.media3:media3-common:1.8.0"
-    implementation "androidx.media3:media3-effect:1.8.0"
-    implementation "androidx.media3:media3-muxer:1.8.0"
+    // REMOVE Media3 completely — you're NOT using it anymore
+    // implementation "androidx.media3:media3-transformer:1.8.0"
+    // implementation "androidx.media3:media3-common:1.8.0"
+    // implementation "androidx.media3:media3-effect:1.8.0"
+    // implementation "androidx.media3:media3-muxer:1.8.0"
 
+    // KEEP annotation (Flutter plugin code generation sometimes needs it)
     implementation "androidx.annotation:annotation:1.8.0"
+
+    // FFmpegKit 16KB build — THIS is all you need
+    implementation "com.moizhassan.ffmpeg:ffmpeg-kit-16kb:6.0.0"
 }
