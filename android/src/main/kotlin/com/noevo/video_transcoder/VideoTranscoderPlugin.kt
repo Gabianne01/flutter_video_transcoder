@@ -67,79 +67,82 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
             val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
-            // --- Step 1: Read coded resolution + rotation ---
-            val retriever = MediaMetadataRetriever()
-            retriever.setDataSource(context, Uri.fromFile(inputFile))
+           // --- Step 1: Read raw coded resolution + rotation ---
+val retriever = MediaMetadataRetriever()
+retriever.setDataSource(context, Uri.fromFile(inputFile))
 
-            val srcWidth =
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-                    ?.toIntOrNull() ?: 0
-            val srcHeight =
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-                    ?.toIntOrNull() ?: 0
+val rawW = retriever.extractMetadata(
+    MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH
+)?.toIntOrNull() ?: 0
 
-            val rotationDegrees =
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
-                    ?.toIntOrNull() ?: 0
+val rawH = retriever.extractMetadata(
+    MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT
+)?.toIntOrNull() ?: 0
 
-            retriever.release()
+val rotationDegrees = retriever.extractMetadata(
+    MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION
+)?.toIntOrNull() ?: 0
 
-            if (srcWidth <= 0 || srcHeight <= 0) {
-                Log.w("VideoTranscoder", "Could not read resolution, leaving as-is.")
-            }
+retriever.release()
 
-            // Treat display size as after rotation (but we do NOT rotate manually!)
-            val isQuarterTurn = rotationDegrees == 90 || rotationDegrees == 270
-            val displayWidth = if (isQuarterTurn) srcHeight else srcWidth
-            val displayHeight = if (isQuarterTurn) srcWidth else srcHeight
+if (rawW <= 0 || rawH <= 0) {
+    Log.w("VideoTranscoder", "Could not read resolution; proceeding anyway")
+}
 
-            // --- Step 2: Natural scale – no upscaling ---
-            val scale =
-                if (displayHeight > 0 && displayHeight > maxHeight) {
-                    maxHeight.toFloat() / displayHeight.toFloat()
-                } else {
-                    1f
-                }
+// --- Step 2: Compute DISPLAY size (orientation only affects display, not alignment) ---
+val displayW = if (rotationDegrees == 90 || rotationDegrees == 270) rawH else rawW
+val displayH = if (rotationDegrees == 90 || rotationDegrees == 270) rawW else rawH
 
-            val scaledDisplayW =
-                if (displayWidth > 0) (displayWidth * scale).roundToInt() else displayWidth
-            val scaledDisplayH =
-                if (displayHeight > 0) (displayHeight * scale).roundToInt() else displayHeight
+// --- Step 3: Natural downscale (no upscaling) ---
+val scale = if (displayH > maxHeight) {
+    maxHeight.toFloat() / displayH.toFloat()
+} else 1f
 
-            // --- Step 3: Align to 16px using display dims ---
-            fun align16(x: Int): Int = if (x > 0) (x / 16) * 16 else x
+val scaledW = (displayW * scale).toInt()
+val scaledH = (displayH * scale).toInt()
 
-            var outW = align16(scaledDisplayW)
-            var outH = align16(scaledDisplayH)
+// --- Step 4: Align based on RAW coded orientation (not display orientation) ---
+val alignedForCodecW = align16(rawW)
+val alignedForCodecH = align16(rawH)
 
-            if (outW <= 0 || outH <= 0) {
-                outW = align16(displayWidth)
-                outH = align16(displayHeight)
-            }
+// Now align scaled output based on codec direction
+var outW: Int
+var outH: Int
 
-            Log.i(
-                "VideoTranscoder",
-                "📏 Source=${srcWidth}x$srcHeight (rot=$rotationDegrees), " +
-                    "display=${displayWidth}x$displayHeight, " +
-                    "scale=${"%.3f".format(scale)}, output=${outW}x$outH"
-            )
+if (rotationDegrees == 90 || rotationDegrees == 270) {
+    // Codec sees (rawW × rawH) but display uses swapped orientation
+    outW = align16(scaledH) // scaleH maps to codecWidth
+    outH = align16(scaledW) // scaleW maps to codecHeight
+} else {
+    outW = align16(scaledW)
+    outH = align16(scaledH)
+}
 
-            // --- Step 4: Presentation ONLY — no manual rotation ---
-            val presentation = Presentation.createForWidthAndHeight(
-                outW,
-                outH,
-                Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
-            )
+if (outW <= 0 || outH <= 0) {
+    outW = align16(displayW)
+    outH = align16(displayH)
+}
 
-            val videoEffects = listOf(presentation)
-            val effects = Effects(
-                /* audioProcessors = */ emptyList(),
-                /* videoEffects   = */ videoEffects
-            )
+Log.i(
+    "VideoTranscoder",
+    "📏 raw=${rawW}x$rawH, rot=$rotationDegrees°, final=${outW}x$outH"
+)
 
-            val edited = EditedMediaItem.Builder(mediaItem)
-                .setEffects(effects)
-                .build()
+// --- Step 5: Presentation ONLY (Media3 handles rotation internally) ---
+val presentation = Presentation.createForWidthAndHeight(
+    outW,
+    outH,
+    Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+)
+
+val effects = Effects(
+    /* audioProcessors = */ emptyList(),
+    /* videoEffects   = */ listOf(presentation)
+)
+
+val edited = EditedMediaItem.Builder(mediaItem)
+    .setEffects(effects)
+    .build()
 
             val sequence = EditedMediaItemSequence(listOf(edited))
             val composition = Composition.Builder(listOf(sequence)).build()
