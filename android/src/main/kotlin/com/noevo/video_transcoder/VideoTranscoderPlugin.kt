@@ -5,6 +5,8 @@ import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.ScaleAndRotateTransformation
+import androidx.media3.common.Effect
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
@@ -67,71 +69,98 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
             val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
 
-            // --- Step 1: Read original resolution ---
-            val retriever = MediaMetadataRetriever()
-            retriever.setDataSource(context, Uri.fromFile(inputFile))
-            val srcWidth =
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-                    ?.toIntOrNull() ?: 0
-            val srcHeight =
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-                    ?.toIntOrNull() ?: 0
-            retriever.release()
+            // --- Step 1: Read original resolution + rotation ---
+val retriever = MediaMetadataRetriever()
+retriever.setDataSource(context, Uri.fromFile(inputFile))
 
-            if (srcWidth <= 0 || srcHeight <= 0) {
-                Log.w("VideoTranscoder", "Could not read resolution, leaving as-is.")
-                // Fallback: just transcode codec at lower bitrate, no res change
-            }
+val srcWidth =
+    retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+        ?.toIntOrNull() ?: 0
+val srcHeight =
+    retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+        ?.toIntOrNull() ?: 0
 
-            // --- Step 2: Natural scale – no upscaling ---
-            // - If srcHeight > maxHeight → downscale
-            // - else → keep original size
-            val scale =
-                if (srcHeight > 0 && srcHeight > maxHeight) {
-                    maxHeight.toFloat() / srcHeight.toFloat()
-                } else {
-                    1f
-                }
+// Rotation in degrees: 0, 90, 180, 270
+val rotationDegrees =
+    retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+        ?.toIntOrNull() ?: 0
 
-            val scaledW =
-                if (srcWidth > 0) (srcWidth * scale).roundToInt() else srcWidth
-            val scaledH =
-                if (srcHeight > 0) (srcHeight * scale).roundToInt() else srcHeight
+retriever.release()
 
-            // --- Step 3: Align to 16px to avoid chroma smear ---
-            fun align16(x: Int): Int = if (x > 0) (x / 16) * 16 else x
+if (srcWidth <= 0 || srcHeight <= 0) {
+    Log.w("VideoTranscoder", "Could not read resolution, leaving as-is.")
+}
 
-            var outW = align16(scaledW)
-            var outH = align16(scaledH)
+// Treat "display" size as width/height AFTER rotation
+val isQuarterTurn = rotationDegrees == 90 || rotationDegrees == 270
+val displayWidth = if (isQuarterTurn) srcHeight else srcWidth
+val displayHeight = if (isQuarterTurn) srcWidth else srcHeight
 
-            // Safety: never drop to 0, fall back to original if needed
-            if (outW <= 0 || outH <= 0) {
-                outW = align16(srcWidth)
-                outH = align16(srcHeight)
-            }
+// --- Step 2: Natural scale – no upscaling ---
+// Use displayHeight for the decision
+val scale =
+    if (displayHeight > 0 && displayHeight > maxHeight) {
+        maxHeight.toFloat() / displayHeight.toFloat()
+    } else {
+        1f
+    }
 
-            Log.i(
-                "VideoTranscoder",
-                "📏 Source=${srcWidth}x$srcHeight, scale=${"%.3f".format(scale)}, output=${outW}x$outH"
-            )
+val scaledDisplayW =
+    if (displayWidth > 0) (displayWidth * scale).roundToInt() else displayWidth
+val scaledDisplayH =
+    if (displayHeight > 0) (displayHeight * scale).roundToInt() else displayHeight
 
-            // --- Step 4: Presentation effect – crop/scale into aligned frame ---
-            val presentation = Presentation.createForWidthAndHeight(
-                outW,
-                outH,
-                Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
-            )
+// --- Step 3: Align to 16px (same logic as before, just using display dims) ---
+fun align16(x: Int): Int = if (x > 0) (x / 16) * 16 else x
 
-            // Single video effect: just the presentation (no double-scaling)
-            val videoEffects = listOf(presentation)
-            val effects = Effects(
-                /* audioProcessors = */ emptyList(),
-                /* videoEffects  =   */ videoEffects
-            )
+var outW = align16(scaledDisplayW)
+var outH = align16(scaledDisplayH)
 
-            val edited = EditedMediaItem.Builder(mediaItem)
-                .setEffects(effects)
-                .build()
+// Safety: never drop to 0, fall back to original display size
+if (outW <= 0 || outH <= 0) {
+    outW = align16(displayWidth)
+    outH = align16(displayHeight)
+}
+
+Log.i(
+    "VideoTranscoder",
+    "📏 Source=${srcWidth}x$srcHeight (rot=$rotationDegrees), " +
+        "display=${displayWidth}x$displayHeight, " +
+        "scale=${"%.3f".format(scale)}, output=${outW}x$outH"
+)
+
+// --- Step 4: Build video effects: rotation (if needed) + presentation ---
+val videoEffects = mutableListOf<Effect>()
+
+// 4a. Apply physical rotation so portrait stays portrait
+if (rotationDegrees != 0) {
+    val rotate = ScaleAndRotateTransformation.Builder()
+        .setRotationDegrees(rotationDegrees.toFloat())
+        .build()
+    videoEffects.add(rotate)
+    Log.i("VideoTranscoder", "🎞 Applying rotation: $rotationDegrees°")
+}
+
+// 4b. Crop/scale into final aligned frame
+val presentation = Presentation.createForWidthAndHeight(
+    outW,
+    outH,
+    Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+)
+videoEffects.add(presentation)
+
+val effects = Effects(
+    /* audioProcessors = */ emptyList(),
+    /* videoEffects  =   */ videoEffects
+)
+
+val edited = EditedMediaItem.Builder(mediaItem)
+    .setEffects(effects)
+    .build()
+
+val sequence = EditedMediaItemSequence(listOf(edited))
+val composition = Composition.Builder(listOf(sequence)).build()
+
 
             val sequence = EditedMediaItemSequence(listOf(edited))
             val composition = Composition.Builder(listOf(sequence)).build()
