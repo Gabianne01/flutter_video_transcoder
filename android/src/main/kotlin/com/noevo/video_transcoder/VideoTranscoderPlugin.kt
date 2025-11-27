@@ -3,31 +3,42 @@ package com.noevo.video_transcoder
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
-import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.FFmpegSession
-import com.arthenica.ffmpegkit.ReturnCode
+import androidx.annotation.OptIn
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.Presentation
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.DefaultEncoderFactory
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.Effects
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.TransformationRequest
+import androidx.media3.transformer.Transformer
+import androidx.media3.transformer.VideoEncoderSettings
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 
 /**
- * Flutter method channel:
- *   Method: "transcodeToSafeH264"
- *   Args:
- *     - input: String (absolute path or SAF param)
- *     - output: String
- *     - maxHeight: Int?  (optional, default 720)
- *     - crf: Int?        (optional, default 23)
+ * Method channel: "video_transcoder"
+ *
+ * Method: "transcodeToSafeH264"
+ * Args:
+ *   - input: String (absolute path)
+ *   - output: String (absolute path)
+ *   - maxHeight: Int?  (optional, defaults to 720)
+ *   - bitrate: Int?    (optional, defaults to 1_600_000)
  */
+@OptIn(UnstableApi::class)
 class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     private lateinit var channel: MethodChannel
     private lateinit var context: Context
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         context = binding.applicationContext
@@ -45,25 +56,24 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             return
         }
 
-        val input = call.argument<String>("input")
-        val output = call.argument<String>("output")
+        val inputPath = call.argument<String>("input")
+        val outputPath = call.argument<String>("output")
+        val maxHeight = call.argument<Int>("maxHeight") ?: 720
+        val targetBitrate = call.argument<Int>("bitrate") ?: 1_600_000
 
-        if (input.isNullOrBlank() || output.isNullOrBlank()) {
+        if (inputPath.isNullOrBlank() || outputPath.isNullOrBlank()) {
             result.error("BAD_ARGS", "input and output paths are required", null)
             return
         }
 
-        val maxHeight = call.argument<Int>("maxHeight") ?: 720
-        val crf = call.argument<Int>("crf") ?: 23
-
         try {
-            val inputFile = File(input)
+            val inputFile = File(inputPath)
             if (!inputFile.exists()) {
-                result.error("NO_INPUT", "Input file not found at $input", null)
+                result.error("NO_INPUT", "Input file not found at $inputPath", null)
                 return
             }
 
-            val outputFile = File(output)
+            val outputFile = File(outputPath)
             outputFile.parentFile?.let { parent ->
                 if (!parent.exists() && !parent.mkdirs()) {
                     result.error("NO_OUTPUT_DIR", "Unable to create output directory", null)
@@ -71,45 +81,139 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 }
             }
 
-            // Read original dimensions via Android, not FFmpeg.
-            val dims = readVideoDimensions(context, inputFile)
-            if (dims == null || dims.width <= 0 || dims.height <= 0) {
-                // Fallback: just copy via FFmpeg without filters.
-                Log.w(TAG, "Unable to read dimensions. Falling back to simple re-encode.")
-                runFfmpeg(
-                    inputPath = inputFile.absolutePath,
-                    outputPath = outputFile.absolutePath,
-                    width = null,
-                    height = null,
-                    maxHeight = maxHeight,
-                    crf = crf,
-                    result = result
-                )
+            // 1) Probe video
+            val meta = readVideoMetadata(context, inputFile)
+            if (meta == null || meta.displayW <= 0 || meta.displayH <= 0) {
+                Log.e(TAG, "Bad metadata: $meta")
+                // Fallback: just copy original without compression
+                inputFile.copyTo(outputFile, overwrite = true)
+                result.success(outputPath)
                 return
             }
 
-            val (displayW, displayH) = dims
-            Log.i(TAG, "Input display size = ${displayW}x$displayH")
+            val displayW = meta.displayW
+            val displayH = meta.displayH
+            val rotation = meta.rotation
 
-            // Downscale only if taller than maxHeight; otherwise keep original size.
-            val (targetW, targetH) = computeTargetSize(displayW, displayH, maxHeight)
-            Log.i(TAG, "Target (before even clamp) = ${targetW}x$targetH")
+            Log.i(TAG, "raw=${meta.rawW}x${meta.rawH}, rot=$rotation°, display=${displayW}x$displayH")
 
-            // Make sure both are even; libx264 only needs mod2, not mod16.
-            val evenW = targetW and 1.inv()
-            val evenH = targetH and 1.inv()
+            // 2) Compute scaled display size with maxHeight=720, no upscaling
+            val scale = if (displayH > maxHeight) {
+                maxHeight.toFloat() / displayH.toFloat()
+            } else {
+                1f
+            }
 
-            Log.i(TAG, "Final encode size = ${evenW}x$evenH (even-clamped)")
+            val scaledDisplayW = (displayW * scale).toInt().coerceAtLeast(2)
+            val scaledDisplayH = (displayH * scale).toInt().coerceAtLeast(2)
 
-            runFfmpeg(
-                inputPath = inputFile.absolutePath,
-                outputPath = outputFile.absolutePath,
-                width = evenW,
-                height = evenH,
-                maxHeight = maxHeight,
-                crf = crf,
-                result = result
+            // 3) Align to mod16 in display space (like your old patch)
+            fun align16(x: Int): Int = if (x > 0) (x / 16) * 16 else x
+
+            var safeDisplayW = align16(scaledDisplayW)
+            var safeDisplayH = align16(scaledDisplayH)
+
+            // Don't let them collapse to 0; fall back to at least 16x16
+            if (safeDisplayW < 16) safeDisplayW = 16
+            if (safeDisplayH < 16) safeDisplayH = 16
+
+            Log.i(
+                TAG,
+                "scaledDisplay=${scaledDisplayW}x$scaledDisplayH → safeDisplay=${safeDisplayW}x$safeDisplayH"
             )
+
+            // NOTE: Presentation takes the display-space target size.
+            // Media3 will handle rotation internally using GL, so we define
+            // the size "as seen by the user" (no swapped width/height here).
+            val presentation = Presentation.createForWidthAndHeight(
+                safeDisplayW,
+                safeDisplayH,
+                Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP // crop-to-fill: no black bars
+            )
+
+            val effects = Effects(
+                emptyList(),                 // no audio effects
+                listOf(presentation)         // single video effect
+            )
+
+            val mediaItem = MediaItem.fromUri(Uri.fromFile(inputFile))
+
+            val editedItem = EditedMediaItem.Builder(mediaItem)
+                .setEffects(effects)
+                .setRemoveAudio(false)
+                .build()
+
+            val sequence = EditedMediaItemSequence(listOf(editedItem))
+            val composition = Composition.Builder(listOf(sequence)).build()
+
+            // 4) Encoder settings: H.264 + AAC, modest bitrate
+            val request = TransformationRequest.Builder()
+                .setVideoMimeType(MimeTypes.VIDEO_H264)
+                .setAudioMimeType(MimeTypes.AUDIO_AAC)
+                .build()
+
+            val videoEncoderSettings = VideoEncoderSettings.Builder()
+                .setBitrate(targetBitrate)
+                .build()
+
+            val encoderFactory = DefaultEncoderFactory.Builder(context)
+                .setRequestedVideoEncoderSettings(videoEncoderSettings)
+                .setEnableFallback(true) // allow Media3 to adjust settings if needed
+                .build()
+
+            val transformer = Transformer.Builder(context)
+                .setEncoderFactory(encoderFactory)
+                .setTransformationRequest(request)
+                .addListener(object : Transformer.Listener {
+
+                    override fun onCompleted(
+                        composition: Composition,
+                        exportResult: ExportResult
+                    ) {
+                        try {
+                            val originalSize = inputFile.length()
+                            val compressedSize = outputFile.length()
+
+                            Log.i(
+                                TAG,
+                                "✅ Completed: original=${originalSize}B, compressed=${compressedSize}B, " +
+                                        "videoEncoder=${exportResult.videoEncoderName}"
+                            )
+
+                            // Optional: if compression is useless (<5% savings), keep original
+                            if (originalSize > 0 && compressedSize > 0) {
+                                val ratio =
+                                    compressedSize.toFloat() / originalSize.toFloat()
+                                if (ratio >= 0.95f) {
+                                    Log.i(TAG, "ℹ Restoring original (compression not worth it).")
+                                    inputFile.copyTo(outputFile, overwrite = true)
+                                }
+                            }
+
+                            result.success(outputPath)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "POST_PROCESS EXCEPTION", e)
+                            result.error("POST_PROCESS", e.message, null)
+                        }
+                    }
+
+                    override fun onError(
+                        composition: Composition,
+                        exportResult: ExportResult,
+                        exception: ExportException
+                    ) {
+                        Log.e(
+                            TAG,
+                            "❌ Transform error, videoEncoder=${exportResult.videoEncoderName}",
+                            exception
+                        )
+                        result.error("TRANSFORM_ERROR", exception.message, null)
+                    }
+                })
+                .build()
+
+            // 5) Start transformation
+            transformer.start(composition, outputPath)
 
         } catch (t: Throwable) {
             Log.e(TAG, "SETUP_FAIL", t)
@@ -118,12 +222,18 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     // ------------------------------------------------------------------------
-    // Helper: read dimensions using MediaMetadataRetriever
+    // Metadata helpers
     // ------------------------------------------------------------------------
 
-    private data class Size(val width: Int, val height: Int)
+    private data class VideoMeta(
+        val rawW: Int,
+        val rawH: Int,
+        val rotation: Int,
+        val displayW: Int,
+        val displayH: Int
+    )
 
-    private fun readVideoDimensions(context: Context, file: File): Size? {
+    private fun readVideoMetadata(context: Context, file: File): VideoMeta? {
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(context, Uri.fromFile(file))
@@ -138,154 +248,21 @@ class VideoTranscoderPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
                 ?.toIntOrNull() ?: 0
 
-            // Display orientation, not coded orientation.
             val displayW = if (rotation == 90 || rotation == 270) rawH else rawW
             val displayH = if (rotation == 90 || rotation == 270) rawW else rawH
 
-            if (displayW <= 0 || displayH <= 0) null
-            else Size(displayW, displayH)
+            if (rawW <= 0 || rawH <= 0 || displayW <= 0 || displayH <= 0) {
+                null
+            } else {
+                VideoMeta(rawW, rawH, rotation, displayW, displayH)
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to read video metadata", e)
+            Log.e(TAG, "Metadata read failed", e)
             null
         } finally {
             try {
                 retriever.release()
             } catch (_: Exception) {
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------------
-    // Helper: compute target size with aspect ratio preserved
-    // ------------------------------------------------------------------------
-
-    private fun computeTargetSize(
-        width: Int,
-        height: Int,
-        maxHeight: Int
-    ): Size {
-        if (height <= maxHeight) {
-            // No downscale; keep original (then clamp to even later).
-            return Size(width, height)
-        }
-
-        val scale = maxHeight.toFloat() / height.toFloat()
-        val scaledW = (width * scale).toInt().coerceAtLeast(2)
-        val scaledH = maxHeight.coerceAtLeast(2)
-        return Size(scaledW, scaledH)
-    }
-
-    // ------------------------------------------------------------------------
-    // Helper: run FFmpegKit
-    // ------------------------------------------------------------------------
-
-    private fun runFfmpeg(
-        inputPath: String,
-        outputPath: String,
-        width: Int?,
-        height: Int?,
-        maxHeight: Int,
-        crf: Int,
-        result: MethodChannel.Result
-    ) {
-        // Build argument list.
-        val args = mutableListOf<String>()
-
-        // Overwrite output.
-        args += "-y"
-        // Lower noise; we log failures explicitly.
-        args += "-hide_banner"
-        args += "-loglevel"; args += "error"
-
-        // Input.
-        args += "-i"; args += inputPath
-
-        // Video filter: only if we know width/height.
-        if (width != null && height != null && width > 0 && height > 0) {
-            args += "-vf"
-            // No cropping, just scale + pixel format.
-            args += "scale=${width}:${height},format=yuv420p"
-        } else {
-            // We still enforce yuv420p for max compatibility.
-            args += "-vf"
-            args += "format=yuv420p"
-        }
-
-        // Video codec & quality.
-        args += "-c:v"; args += "libx264"
-        args += "-preset"; args += "veryfast"
-        args += "-crf"; args += crf.coerceIn(18, 30).toString()
-
-        // Limit decoder load a bit by capping fps if someone shot 240fps nonsense.
-        args += "-r"; args += "30"
-
-        // Audio: re-encode to AAC at safe bitrate.
-        args += "-c:a"; args += "aac"
-        args += "-b:a"; args += "128k"
-
-        // Web-friendly MP4 layout, faster start.
-        args += "-movflags"; args += "+faststart"
-
-        // Limit encoder threads a bit to avoid hammering the device.
-        args += "-threads"; args += "2"
-
-        // Output.
-        args += outputPath
-
-        Log.i(TAG, "FFmpeg command args = ${args.joinToString(" ")}")
-
-        // Run async; ffmpeg-kit handles the native threading.
-        FFmpegKit.executeWithArgumentsAsync(
-            args.toTypedArray(),
-            { session: FFmpegSession ->
-                val rc = session.returnCode
-
-                if (ReturnCode.isSuccess(rc)) {
-                    Log.i(TAG, "FFmpeg success, rc=${rc.value}")
-                    postResultSuccess(result, outputPath)
-                } else if (ReturnCode.isCancel(rc)) {
-                    Log.w(TAG, "FFmpeg cancelled, rc=${rc.value}")
-                    postResultError(result, "CANCELLED", "FFmpeg execution was cancelled")
-                } else {
-                    val failStack = session.failStackTrace ?: "Unknown error"
-                    Log.e(
-                        TAG,
-                        "FFmpeg failed, rc=${rc?.value}, state=${session.state}, stack=$failStack"
-                    )
-                    postResultError(result, "FFMPEG_FAIL", failStack)
-                }
-            },
-            { log ->
-                // If you want verbose logging, change loglevel to info/debug above.
-                Log.d(TAG, "ffmpeg: ${log.message}")
-            },
-            { statistics ->
-                // Hook this if at some point you want progress reporting on Dart side.
-                Log.v(TAG, "ffmpeg stats: time=${statistics.time}, size=${statistics.size}")
-            }
-        )
-    }
-
-    private fun postResultSuccess(result: MethodChannel.Result, output: String) {
-        mainHandler.post {
-            try {
-                result.success(output)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error returning success to Flutter", e)
-            }
-        }
-    }
-
-    private fun postResultError(
-        result: MethodChannel.Result,
-        code: String,
-        message: String
-    ) {
-        mainHandler.post {
-            try {
-                result.error(code, message, null)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error returning error to Flutter", e)
             }
         }
     }
